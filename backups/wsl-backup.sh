@@ -69,8 +69,20 @@ rotate_logs "$LOG_DIR" "$LOG_RETENTION_DAYS"
 # --- Build rsync command ---
 EXCLUDE_FILE="$OPS_ROOT/backups/wsl-backup.exclude"
 
+# drvfs (Windows network drive) does not support Unix symlinks, permissions,
+# ownership, or reliable timestamp setting. Using -a (which implies -rlptgoD)
+# causes widespread "Operation not permitted" errors. Instead we use:
+#   -rD          recursive + device/special files (no symlinks, perms, owner, group, times)
+#   --no-links   skip symlinks entirely (drvfs cannot create them)
+#   --no-times   don't set file timestamps (drvfs rejects utimes() on many files)
+#   --size-only  detect changes by file size instead of mod-time (since we don't
+#                preserve timestamps). Files modified without size change won't be
+#                re-transferred — acceptable tradeoff for a daily backup.
 rsync_args=(
-    -a
+    -rD
+    --no-links
+    --no-times
+    --size-only
     --delete
     --exclude-from="$EXCLUDE_FILE"
     --log-file="$LOG_FILE"
