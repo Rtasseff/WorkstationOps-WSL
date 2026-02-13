@@ -1,0 +1,41 @@
+# backups/wsl-backup.exclude — rsync exclusion patterns
+# Sensitive credentials
+.ssh/
+.gnupg/
+
+# This repo (avoid recursive backup)
+WorkstationOps/
+
+# Caches
+.cache/
+.npm/
+.pip/
+
+# VS Code remote server (regenerable)
+.vscode-server/
+
+# Language build/cache artifacts
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+target/
+
+# Git LFS cache
+**/.git/lfs/
+
+# Containers
+.docker/
+.local/share/containers/
+
+# Trash
+.local/share/Trash/
+
+# Temp files
+*.tmp
+*.swp
+*~

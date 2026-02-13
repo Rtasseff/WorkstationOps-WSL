@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# ops — CLI entry point for WorkstationOps
+#
+# Usage: ./ops <command> [options]
+
+set -euo pipefail
+
+OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$OPS_ROOT/lib/common.sh"
+source "$OPS_ROOT/lib/cron-manager.sh"
+source "$OPS_ROOT/config/backup.conf"
+
+LOG_DIR="$OPS_ROOT/logs"
+
+# ─── Helpers ──────────────────────────────────────────────
+
+_is_mounted() {
+    [[ -d "$BACKUP_MOUNT_CHECK" ]] && [[ -n "$(ls -A "$BACKUP_MOUNT_CHECK" 2>/dev/null)" ]]
+}
+
+_last_backup_log() {
+    # Most recent log file by name (date-sorted)
+    ls -1 "$LOG_DIR"/backup-*.log 2>/dev/null | sort -r | head -1
+}
+
+_last_backup_time() {
+    local log
+    log="$(_last_backup_log)"
+    [[ -z "$log" ]] && return 1
+
+    # Parse the last "Backup starting" timestamp from the log
+    local ts
+    ts=$(grep -oP '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' "$log" | tail -1)
+    [[ -z "$ts" ]] && return 1
+
+    date -d "$ts" +%s 2>/dev/null
+}
+
+_last_backup_status() {
+    local log
+    log="$(_last_backup_log)"
+    [[ -z "$log" ]] && echo "unknown" && return
+
+    if grep -q '\[OK   \]' "$log"; then
+        echo "success"
+    elif grep -q '\[WARN \]' "$log"; then
+        echo "warning"
+    elif grep -q '\[ERROR\]' "$log"; then
+        echo "error"
+    else
+        echo "unknown"
+    fi
+}
+
+_relative_time() {
+    local epoch="$1"
+    local now
+    now=$(date +%s)
+    local diff=$(( now - epoch ))
+
+    if (( diff < 60 )); then
+        echo "just now"
+    elif (( diff < 3600 )); then
+        echo "$(( diff / 60 ))m ago"
+    elif (( diff < 86400 )); then
+        echo "$(( diff / 3600 ))h ago"
+    else
+        echo "$(( diff / 86400 ))d ago"
+    fi
+}
+
+_next_cron_estimate() {
+    # Simple estimate: today or tomorrow at the scheduled hour
+    local hour minute
+    hour=$(echo "$BACKUP_CRON_SCHEDULE" | awk '{print $2}')
+    minute=$(echo "$BACKUP_CRON_SCHEDULE" | awk '{print $1}')
+
+    local today_run
+    today_run=$(date -d "today ${hour}:${minute}" +%s 2>/dev/null)
+    local now
+    now=$(date +%s)
+
+    if (( today_run > now )); then
+        date -d "today ${hour}:${minute}" '+%a %l:%M %p'
+    else
+        date -d "tomorrow ${hour}:${minute}" '+%a %l:%M %p'
+    fi
+}
+
+# ─── Commands ─────────────────────────────────────────────
+
+cmd_status() {
+    local brief=false
+    [[ "${1:-}" == "--brief" ]] && brief=true
+
+    if $brief; then
+        # Single-line output for .bashrc
+        local last_epoch status_text next
+        if last_epoch=$(_last_backup_time); then
+            local rel
+            rel="$(_relative_time "$last_epoch")"
+            local status
+            status="$(_last_backup_status)"
+            case "$status" in
+                success) status_text="ran ${rel}" ;;
+                warning) status_text="ran ${rel} (warnings)" ;;
+                error)   status_text="${_RED}FAILED ${rel}${_RESET}" ;;
+                *)       status_text="ran ${rel}" ;;
+            esac
+        else
+            status_text="no backup history"
+        fi
+
+        if is_job_scheduled "wsl-backup"; then
+            next="$(_next_cron_estimate)"
+            echo "${_BOLD}WorkstationOps:${_RESET} Backup ${status_text} | Next: ${next}"
+        else
+            echo "${_BOLD}WorkstationOps:${_RESET} Backup ${status_text} | ${_YELLOW}Not scheduled${_RESET}"
+        fi
+        return
+    fi
+
+    # Full status
+    echo "${_BOLD}=== WorkstationOps Status ===${_RESET}"
+    echo
+
+    # Network drive
+    printf "  Network drive: "
+    if _is_mounted; then
+        local avail
+        avail=$(df -h "$BACKUP_MOUNT_CHECK" 2>/dev/null | awk 'NR==2{print $4}')
+        echo "${_GREEN}mounted${_RESET} (${avail} available)"
+    else
+        echo "${_YELLOW}not mounted${_RESET}"
+    fi
+
+    # Backup job
+    printf "  Backup cron:   "
+    if is_job_scheduled "wsl-backup"; then
+        echo "${_GREEN}scheduled${_RESET} (${BACKUP_CRON_SCHEDULE})"
+    else
+        echo "${_YELLOW}not scheduled${_RESET}"
+    fi
+
+    # Last run
+    printf "  Last backup:   "
+    local last_epoch
+    if last_epoch=$(_last_backup_time); then
+        local rel status
+        rel="$(_relative_time "$last_epoch")"
+        status="$(_last_backup_status)"
+        case "$status" in
+            success) echo "${_GREEN}${rel}${_RESET} (success)" ;;
+            warning) echo "${_YELLOW}${rel}${_RESET} (warnings)" ;;
+            error)   echo "${_RED}${rel}${_RESET} (FAILED)" ;;
+            *)       echo "${rel}" ;;
+        esac
+    else
+        echo "no backup history"
+    fi
+
+    # Next run
+    printf "  Next run:      "
+    if is_job_scheduled "wsl-backup"; then
+        echo "$(_next_cron_estimate)"
+    else
+        echo "—"
+    fi
+
+    echo
+}
+
+cmd_schedule() {
+    if is_job_scheduled "wsl-backup"; then
+        log_info "Backup cron job is already scheduled."
+        list_cron_jobs
+        return
+    fi
+
+    local cmd="$OPS_ROOT/backups/wsl-backup.sh"
+    install_cron_job "wsl-backup" "$BACKUP_CRON_SCHEDULE" "$cmd"
+    log_success "Backup cron job installed: $BACKUP_CRON_SCHEDULE"
+    list_cron_jobs
+}
+
+cmd_unschedule() {
+    if ! is_job_scheduled "wsl-backup"; then
+        log_info "No backup cron job to remove."
+        return
+    fi
+
+    remove_cron_job "wsl-backup"
+    log_success "Backup cron job removed."
+}
+
+cmd_run() {
+    local target="${1:-}"
+    if [[ "$target" != "backup" ]]; then
+        log_error "Usage: ops run backup"
+        exit 1
+    fi
+    shift
+
+    log_info "Running backup interactively..."
+    exec "$OPS_ROOT/backups/wsl-backup.sh" --verbose "$@"
+}
+
+cmd_logs() {
+    local lines="${1:-50}"
+    local log
+    log="$(_last_backup_log)"
+
+    if [[ -z "$log" ]]; then
+        log_info "No backup logs found."
+        return
+    fi
+
+    echo "${_BOLD}Log: ${log}${_RESET}"
+    echo
+    tail -n "$lines" "$log"
+}
+
+cmd_verify() {
+    local ok=true
+    echo "${_BOLD}=== Pre-flight Checks ===${_RESET}"
+    echo
+
+    # rsync
+    printf "  rsync:          "
+    if command -v rsync &>/dev/null; then
+        echo "${_GREEN}installed${_RESET} ($(rsync --version | head -1 | awk '{print $3}'))"
+    else
+        echo "${_RED}NOT INSTALLED${_RESET}"
+        ok=false
+    fi
+
+    # Source directory
+    printf "  Source:         "
+    if [[ -d "$BACKUP_SOURCE" ]]; then
+        echo "${_GREEN}exists${_RESET} ($BACKUP_SOURCE)"
+    else
+        echo "${_RED}MISSING${_RESET} ($BACKUP_SOURCE)"
+        ok=false
+    fi
+
+    # Network drive
+    printf "  Network drive:  "
+    if _is_mounted; then
+        echo "${_GREEN}mounted${_RESET} ($BACKUP_MOUNT_CHECK)"
+    else
+        echo "${_YELLOW}not mounted${_RESET} ($BACKUP_MOUNT_CHECK)"
+        ok=false
+    fi
+
+    # Destination
+    printf "  Destination:    "
+    if [[ -d "$BACKUP_DEST" ]]; then
+        local avail
+        avail=$(df -h "$BACKUP_DEST" 2>/dev/null | awk 'NR==2{print $4}')
+        echo "${_GREEN}exists${_RESET} ($BACKUP_DEST, ${avail} free)"
+    elif _is_mounted; then
+        echo "${_YELLOW}will be created${_RESET} ($BACKUP_DEST)"
+    else
+        echo "${_YELLOW}skipped${_RESET} (network drive not mounted)"
+    fi
+
+    # Cron service
+    printf "  Cron service:   "
+    if systemctl is-active cron &>/dev/null 2>&1; then
+        echo "${_GREEN}running${_RESET}"
+    elif pgrep -x cron &>/dev/null; then
+        echo "${_GREEN}running${_RESET}"
+    else
+        echo "${_YELLOW}not running${_RESET}"
+        ok=false
+    fi
+
+    # Exclude file
+    printf "  Exclude file:   "
+    if [[ -f "$OPS_ROOT/backups/wsl-backup.exclude" ]]; then
+        local count
+        count=$(grep -cve '^\s*$' -e '^\s*#' "$OPS_ROOT/backups/wsl-backup.exclude")
+        echo "${_GREEN}found${_RESET} ($count patterns)"
+    else
+        echo "${_RED}MISSING${_RESET}"
+        ok=false
+    fi
+
+    echo
+    if $ok; then
+        log_success "All checks passed."
+    else
+        log_warn "Some checks failed. Review above."
+        return 1
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+${_BOLD}WorkstationOps${_RESET} — WSL home directory backup manager
+
+${_BOLD}Usage:${_RESET} ./ops <command> [options]
+
+${_BOLD}Commands:${_RESET}
+  status [--brief]   Show backup status (--brief for single-line output)
+  schedule           Install daily backup cron job (idempotent)
+  unschedule         Remove backup cron job
+  run backup         Run backup interactively with verbose output
+  logs [N]           Show last N lines of most recent log (default: 50)
+  verify             Pre-flight environment checks
+  help               Show this help message
+
+${_BOLD}Examples:${_RESET}
+  ./ops verify                # check everything is set up
+  ./ops schedule              # install cron job
+  ./ops status                # see current state
+  ./ops run backup            # manual backup with progress
+  ./ops run backup --dry-run  # test without writing files
+  ./ops logs 100              # last 100 lines of latest log
+EOF
+}
+
+# ─── Main ─────────────────────────────────────────────────
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+
+    case "$cmd" in
+        status)     cmd_status "$@" ;;
+        schedule)   cmd_schedule "$@" ;;
+        unschedule) cmd_unschedule "$@" ;;
+        run)        cmd_run "$@" ;;
+        logs)       cmd_logs "$@" ;;
+        verify)     cmd_verify "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *)
+            log_error "Unknown command: $cmd"
+            echo
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
