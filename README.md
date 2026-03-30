@@ -68,6 +68,37 @@ rsync -avh /mnt/k/rtasseff/wsl/projects/ /home/rtasseff/projects/
 cp /mnt/k/rtasseff/wsl/path/to/file /home/rtasseff/path/to/file
 ```
 
+## Shell Integration
+
+A block in `~/.bashrc` shows a one-line backup status summary once per day when you open a WSL session:
+
+```
+WorkstationOps: Backup ran 3h ago | Next: Tue 12:00 PM
+```
+
+To install, add the following to the end of your `~/.bashrc`:
+
+```bash
+# BEGIN WorkstationOps
+# Daily status reminder — shows backup status once per day
+if [[ -x "$HOME/WorkstationOps/ops" ]]; then
+    _wso_check_file="$HOME/.cache/workstationops_last_check"
+    _wso_today=$(date +%Y-%m-%d)
+    _wso_last=""
+    [[ -f "$_wso_check_file" ]] && _wso_last=$(<"$_wso_check_file")
+    if [[ "$_wso_today" != "$_wso_last" ]]; then
+        if "$HOME/WorkstationOps/ops" status --brief 2>/dev/null; then
+            mkdir -p "$HOME/.cache"
+            echo "$_wso_today" > "$_wso_check_file"
+        fi
+    fi
+    unset _wso_check_file _wso_today _wso_last
+fi
+# END WorkstationOps
+```
+
+The gate file `~/.cache/workstationops_last_check` stores the date of the last successful status display. If `ops status --brief` fails (e.g., during early boot before services are ready), the gate is not updated, so the next session will retry.
+
 ## Configuration
 
 Edit `config/backup.conf` to change:

@@ -36,6 +36,10 @@ This means rsync's standard `-a` (archive) flag cannot be used. The backup scrip
 - **rsync** (3.2.7+): `sudo apt install rsync`
 - **cron**: Included with Ubuntu, started by systemd automatically
 
+## Shell Integration
+
+Add the WorkstationOps block to `~/.bashrc` to see daily backup status on shell open. See the [Shell Integration](../README.md#shell-integration) section in the README for the snippet and details.
+
 ## Manual Key Backup
 
 `.ssh/` and `.gnupg/` are excluded from automated backups for security. Back up SSH keys and GPG keys manually to a secure location if needed.
