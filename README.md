@@ -81,7 +81,8 @@ To install, add the following to the end of your `~/.bashrc`:
 ```bash
 # BEGIN WorkstationOps
 # Daily status reminder — shows backup status once per day
-if [[ -x "$HOME/WorkstationOps/ops" ]]; then
+# Gate: only run when stdout is a real terminal (skips tool-spawned shells like Claude Code)
+if [[ -t 1 ]] && [[ -x "$HOME/WorkstationOps/ops" ]]; then
     _wso_check_file="$HOME/.cache/workstationops_last_check"
     _wso_today=$(date +%Y-%m-%d)
     _wso_last=""
