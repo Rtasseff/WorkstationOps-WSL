@@ -35,6 +35,10 @@ target/
 .docker/
 .local/share/containers/
 
+# XNAT Docker container runtime data (owned by container UIDs, unreadable to user; regenerable)
+tools/xnat-docker-compose/xnat-data/
+tools/xnat-docker-compose/postgres-data/
+
 # Trash
 .local/share/Trash/
 
