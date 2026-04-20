@@ -1,4 +1,18 @@
-# WorkstationOps
+# WorkstationOps (biomaGUNE WSL)
+
+General operations framework for this workstation (biomaGUNE WSL environment). Intended to house any recurring or on-demand ops that keep this machine healthy — backups, maintenance, environment checks, etc. — behind a single `./ops` CLI.
+
+> **Note:** "WorkstationOps" is a project name reused across machines (biomaGUNE WSL, biomaGUNE Windows, home macbook). Each instance is scoped to its host and may have a different set of operations. This README describes the biomaGUNE WSL instance.
+
+## Current Operations
+
+| Operation | Status | Description |
+|---|---|---|
+| `backup` | active | Daily rsync of `/home/rtasseff` → `/mnt/k/rtasseff/wsl/` |
+
+More operations will be added over time. The CLI is structured to dispatch to any operation via `./ops <command>`.
+
+## WSL Home Backup
 
 Automated daily backup of the WSL home directory (`/home/rtasseff`) to a network drive (`/mnt/k/rtasseff/wsl/`).
 
