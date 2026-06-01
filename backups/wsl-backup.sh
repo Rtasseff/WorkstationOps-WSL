@@ -116,6 +116,13 @@ if [[ $rsync_exit -eq 0 ]]; then
 elif [[ $rsync_exit -eq 24 ]]; then
     # Exit 24 = some files vanished during transfer (normal for a live system)
     log_warn "Backup completed with warnings (some files vanished) in $(human_duration $duration)"
+elif [[ $rsync_exit -eq 23 ]]; then
+    # Exit 23 = partial transfer. On this host it almost always means rsync
+    # skipped symlinks under --no-links (drvfs cannot store them). Specific
+    # skipped paths are logged above as "skipping non-regular file ...".
+    # Treated as a warning rather than a failure to stay consistent with the
+    # --no-links policy; real partial-transfer errors will still surface here.
+    log_warn "Backup completed with warnings (skipped non-regular files; see log) in $(human_duration $duration)"
 else
     log_error "Backup failed with exit code $rsync_exit after $(human_duration $duration)"
     exit $rsync_exit
