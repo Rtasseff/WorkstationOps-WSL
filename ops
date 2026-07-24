@@ -10,6 +10,7 @@ OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$OPS_ROOT/lib/common.sh"
 source "$OPS_ROOT/lib/cron-manager.sh"
 source "$OPS_ROOT/config/backup.conf"
+source "$OPS_ROOT/config/oa-auto.conf"
 
 LOG_DIR="$OPS_ROOT/logs"
 
@@ -86,6 +87,28 @@ _next_cron_estimate() {
     else
         date -d "tomorrow ${hour}:${minute}" '+%a %l:%M %p'
     fi
+}
+
+# ─── oa-auto helpers ──────────────────────────────────────
+# The oa-auto job logs to OAData's own file (OA_AUTO_LOG). run_auto.sh
+# writes "=== <ISO ts> oa auto ===" when it starts and "=== exit N ==="
+# when it finishes, so we can report last-run time and outcome from there.
+
+_oa_auto_last_time() {
+    [[ -f "$OA_AUTO_LOG" ]] || return 1
+    local ts
+    ts=$(grep -oP '^=== \K[0-9T:+-]+(?= oa auto ===)' "$OA_AUTO_LOG" 2>/dev/null | tail -1 || true)
+    [[ -z "$ts" ]] && return 1
+    date -d "$ts" +%s 2>/dev/null
+}
+
+_oa_auto_last_status() {
+    [[ -f "$OA_AUTO_LOG" ]] || { echo "unknown"; return; }
+    local code
+    code=$(grep -oP '^=== exit \K[0-9]+' "$OA_AUTO_LOG" 2>/dev/null | tail -1 || true)
+    if [[ -z "$code" ]]; then echo "unknown"
+    elif [[ "$code" == "0" ]]; then echo "success"
+    else echo "error"; fi
 }
 
 # ─── Commands ─────────────────────────────────────────────
@@ -169,53 +192,142 @@ cmd_status() {
     fi
 
     echo
+
+    # oa-auto job (OA Archive Tracker unattended leg)
+    printf "  oa-auto cron:  "
+    if is_job_scheduled "oa-auto"; then
+        echo "${_GREEN}scheduled${_RESET} (${OA_AUTO_CRON_SCHEDULE})"
+    else
+        echo "${_YELLOW}not scheduled${_RESET}"
+    fi
+
+    printf "  Last oa-auto:  "
+    local oa_epoch
+    if oa_epoch=$(_oa_auto_last_time); then
+        local oa_rel oa_status
+        oa_rel="$(_relative_time "$oa_epoch")"
+        oa_status="$(_oa_auto_last_status)"
+        case "$oa_status" in
+            success) echo "${_GREEN}${oa_rel}${_RESET} (success)" ;;
+            error)   echo "${_RED}${oa_rel}${_RESET} (FAILED)" ;;
+            *)       echo "${oa_rel}" ;;
+        esac
+    else
+        echo "no run history"
+    fi
+
+    echo
 }
 
 cmd_schedule() {
-    if is_job_scheduled "wsl-backup"; then
-        log_info "Backup cron job is already scheduled."
-        list_cron_jobs
-        return
-    fi
-
-    local cmd="$OPS_ROOT/backups/wsl-backup.sh"
-    install_cron_job "wsl-backup" "$BACKUP_CRON_SCHEDULE" "$cmd"
-    log_success "Backup cron job installed: $BACKUP_CRON_SCHEDULE"
-    list_cron_jobs
+    local target="${1:-backup}"
+    case "$target" in
+        backup)
+            if is_job_scheduled "wsl-backup"; then
+                log_info "Backup cron job is already scheduled."
+                list_cron_jobs
+                return
+            fi
+            install_cron_job "wsl-backup" "$BACKUP_CRON_SCHEDULE" "$OPS_ROOT/backups/wsl-backup.sh"
+            log_success "Backup cron job installed: $BACKUP_CRON_SCHEDULE"
+            list_cron_jobs
+            ;;
+        oa-auto)
+            if [[ ! -x "$OA_AUTO_SCRIPT" ]]; then
+                log_error "oa-auto script not found or not executable: $OA_AUTO_SCRIPT"
+                exit 1
+            fi
+            if is_job_scheduled "oa-auto"; then
+                log_info "oa-auto cron job is already scheduled."
+                list_cron_jobs
+                return
+            fi
+            install_cron_job "oa-auto" "$OA_AUTO_CRON_SCHEDULE" "$OA_AUTO_SCRIPT"
+            log_success "oa-auto cron job installed: $OA_AUTO_CRON_SCHEDULE"
+            list_cron_jobs
+            ;;
+        *)
+            log_error "Usage: ops schedule [backup|oa-auto]"
+            exit 1
+            ;;
+    esac
 }
 
 cmd_unschedule() {
-    if ! is_job_scheduled "wsl-backup"; then
-        log_info "No backup cron job to remove."
-        return
-    fi
-
-    remove_cron_job "wsl-backup"
-    log_success "Backup cron job removed."
+    local target="${1:-backup}"
+    case "$target" in
+        backup)
+            if ! is_job_scheduled "wsl-backup"; then
+                log_info "No backup cron job to remove."
+                return
+            fi
+            remove_cron_job "wsl-backup"
+            log_success "Backup cron job removed."
+            ;;
+        oa-auto)
+            if ! is_job_scheduled "oa-auto"; then
+                log_info "No oa-auto cron job to remove."
+                return
+            fi
+            remove_cron_job "oa-auto"
+            log_success "oa-auto cron job removed."
+            ;;
+        *)
+            log_error "Usage: ops unschedule [backup|oa-auto]"
+            exit 1
+            ;;
+    esac
 }
 
 cmd_run() {
     local target="${1:-}"
-    if [[ "$target" != "backup" ]]; then
-        log_error "Usage: ops run backup"
-        exit 1
-    fi
-    shift
-
-    log_info "Running backup interactively..."
-    exec "$OPS_ROOT/backups/wsl-backup.sh" --verbose "$@"
+    case "$target" in
+        backup)
+            shift
+            log_info "Running backup interactively..."
+            exec "$OPS_ROOT/backups/wsl-backup.sh" --verbose "$@"
+            ;;
+        oa-auto)
+            shift
+            if [[ ! -x "$OA_AUTO_SCRIPT" ]]; then
+                log_error "oa-auto script not found or not executable: $OA_AUTO_SCRIPT"
+                exit 1
+            fi
+            log_info "Running oa auto (serialized via its own flock; logs to $OA_AUTO_LOG)..."
+            exec "$OA_AUTO_SCRIPT" "$@"
+            ;;
+        *)
+            log_error "Usage: ops run [backup|oa-auto]"
+            exit 1
+            ;;
+    esac
 }
 
 cmd_logs() {
+    local target="backup"
+    if [[ "${1:-}" == "backup" || "${1:-}" == "oa-auto" ]]; then
+        target="$1"
+        shift
+    fi
     local lines="${1:-50}"
+
+    if [[ "$target" == "oa-auto" ]]; then
+        if [[ ! -f "$OA_AUTO_LOG" ]]; then
+            log_info "No oa-auto logs found ($OA_AUTO_LOG)."
+            return
+        fi
+        echo "${_BOLD}Log: ${OA_AUTO_LOG}${_RESET}"
+        echo
+        tail -n "$lines" "$OA_AUTO_LOG"
+        return
+    fi
+
     local log
     log="$(_last_backup_log)"
-
     if [[ -z "$log" ]]; then
         log_info "No backup logs found."
         return
     fi
-
     echo "${_BOLD}Log: ${log}${_RESET}"
     echo
     tail -n "$lines" "$log"
@@ -298,26 +410,30 @@ cmd_verify() {
 
 cmd_help() {
     cat <<EOF
-${_BOLD}WorkstationOps${_RESET} — WSL home directory backup manager
+${_BOLD}WorkstationOps${_RESET} — workstation operations for this WSL host
 
-${_BOLD}Usage:${_RESET} ./ops <command> [options]
+${_BOLD}Usage:${_RESET} ./ops <command> [operation] [options]
+
+${_BOLD}Operations:${_RESET}
+  backup    Daily rsync of /home/rtasseff to the network drive (default)
+  oa-auto   OA Archive Tracker unattended leg (runs OAData's run_auto.sh)
 
 ${_BOLD}Commands:${_RESET}
-  status [--brief]   Show backup status (--brief for single-line output)
-  schedule           Install daily backup cron job (idempotent)
-  unschedule         Remove backup cron job
-  run backup         Run backup interactively with verbose output
-  logs [N]           Show last N lines of most recent log (default: 50)
-  verify             Pre-flight environment checks
-  help               Show this help message
+  status [--brief]        Show status of all operations
+  schedule [op]           Install an operation's cron job (idempotent; default: backup)
+  unschedule [op]         Remove an operation's cron job (default: backup)
+  run <op> [options]      Run an operation interactively
+  logs [op] [N]           Show last N lines of an operation's latest log (default: backup, 50)
+  verify                  Pre-flight environment checks (backup)
+  help                    Show this help message
 
 ${_BOLD}Examples:${_RESET}
-  ./ops verify                # check everything is set up
-  ./ops schedule              # install cron job
-  ./ops status                # see current state
-  ./ops run backup            # manual backup with progress
-  ./ops run backup --dry-run  # test without writing files
-  ./ops logs 100              # last 100 lines of latest log
+  ./ops status                # state of backup + oa-auto
+  ./ops schedule              # install the backup cron job
+  ./ops schedule oa-auto      # install the oa-auto cron job (${OA_AUTO_CRON_SCHEDULE})
+  ./ops run oa-auto           # run oa auto now (foreground)
+  ./ops logs oa-auto 100      # last 100 lines of the oa-auto log
+  ./ops unschedule oa-auto    # remove the oa-auto cron job
 EOF
 }
 

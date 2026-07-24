@@ -9,8 +9,9 @@ General operations framework for this workstation (biomaGUNE WSL environment). I
 | Operation | Status | Description |
 |---|---|---|
 | `backup` | active | Daily rsync of `/home/rtasseff` → `/mnt/k/rtasseff/wsl/` |
+| `oa-auto` | active | OA Archive Tracker unattended leg — schedules OAData's `run_auto.sh` (`oa auto`) |
 
-More operations will be added over time. The CLI is structured to dispatch to any operation via `./ops <command>`.
+More operations will be added over time. The CLI is structured to dispatch to any operation via `./ops <command> [operation]`.
 
 ## WSL Home Backup
 
@@ -18,26 +19,57 @@ Automated daily backup of the WSL home directory (`/home/rtasseff`) to a network
 
 Backups run via cron at noon daily. The script detects when the network drive is unavailable and skips safely — no risk of `--delete` wiping backups when disconnected.
 
+## OA Archive Tracker (`oa-auto`)
+
+Schedules the OA Archive Tracker's unattended leg — `oa auto` — which scans
+the publication folders, syncs the SharePoint tracker, auto-advances what it
+safely can (QC, Zenodo drafts, closures), and regenerates the operator's
+action sheet / emails / digest.
+
+This is an **external job**: WorkstationOps does not own the logic. It
+invokes OAData's own cron wrapper, `run_auto.sh`, which serializes runs
+(`flock`), activates the project venv, and appends output to
+`OAData/output/auto_cron.log`. WorkstationOps only installs the cron entry
+and surfaces the job's schedule + last run in `./ops status`, so every timed
+job on this host is visible from one place. Configure the script path and
+schedule in `config/oa-auto.conf` (default schedule: `0 7 * * 1-5`, i.e.
+07:00 Mon–Fri).
+
+```bash
+./ops run oa-auto        # run oa auto once, in the foreground
+./ops schedule oa-auto   # install the cron job (idempotent)
+./ops logs oa-auto       # tail the latest oa-auto log
+./ops unschedule oa-auto # remove the cron job
+```
+
+Note: like the backup, WSL cron only fires while WSL is running (systemd +
+cron must be up). If WSL isn't always on, drive it from Windows Task
+Scheduler instead (`wsl.exe -d <distro> -- <path>/run_auto.sh`).
+
 ## Quick Start
 
 ```bash
 ./ops verify        # check environment
-./ops schedule      # install cron job
+./ops schedule      # install the backup cron job
+./ops schedule oa-auto  # install the oa-auto cron job
 ./ops status        # confirm everything looks good
 ```
 
 ## Commands
 
+Most commands take an optional operation name (`backup` or `oa-auto`); it
+defaults to `backup` so existing usage is unchanged.
+
 | Command | Description |
 |---|---|
-| `./ops status` | Show backup status, schedule, mount state |
-| `./ops status --brief` | Single-line status (used in .bashrc) |
-| `./ops schedule` | Install daily backup cron job (idempotent) |
-| `./ops unschedule` | Remove backup cron job |
-| `./ops run backup` | Run backup interactively with progress |
-| `./ops run backup --dry-run` | Test run without writing files |
-| `./ops logs [N]` | Show last N lines of latest log (default: 50) |
-| `./ops verify` | Pre-flight checks (rsync, paths, cron, disk) |
+| `./ops status` | Show status of all operations (schedule, last run, mount state) |
+| `./ops status --brief` | Single-line backup status (used in .bashrc) |
+| `./ops schedule [op]` | Install an operation's cron job (idempotent; default: backup) |
+| `./ops unschedule [op]` | Remove an operation's cron job (default: backup) |
+| `./ops run <op>` | Run an operation interactively (`backup` or `oa-auto`) |
+| `./ops run backup --dry-run` | Test backup run without writing files |
+| `./ops logs [op] [N]` | Show last N lines of an operation's latest log (default: backup, 50) |
+| `./ops verify` | Pre-flight checks for backup (rsync, paths, cron, disk) |
 | `./ops help` | Show usage info |
 
 ## How It Works
